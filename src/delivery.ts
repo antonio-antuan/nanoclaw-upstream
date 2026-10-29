@@ -29,6 +29,7 @@ import { clearDeliveryAttempt, recordDeliveryAttempt } from './db/coordination.j
 import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from './delivery-guard.js';
 import { isUnguarded, type Unguarded } from './guard/index.js';
 import { mapConcurrent } from './concurrency.js';
+import { DeliveryTargetError } from './delivery-error.js';
 import { noticeDeliveryFailure } from './delivery-failure-notice.js';
 import { fanOutboundMessage } from './modules/cross-session-context/index.js';
 import { log } from './log.js';
@@ -413,7 +414,10 @@ async function deliverMessage(
   // check will throw, which falls into the normal retry → mark-failed path.
   if (msg.channelType === 'agent') {
     if (!(await hasTable(getDb(), 'agent_destinations'))) {
-      throw new Error(`agent-to-agent module not installed — cannot route message ${msg.id}`);
+      throw new DeliveryTargetError(
+        'not_connected',
+        `agent-to-agent module not installed — cannot route message ${msg.id}`,
+      );
     }
     const { routeAgentMessage } = await import('./modules/agent-to-agent/agent-route.js');
     await routeAgentMessage(
@@ -461,14 +465,18 @@ async function deliverMessage(
         : ((await getMessagingGroupForOwnDestination(session.agent_group_id, msg.channelType, msg.platformId)) ??
           (await getMessagingGroupByPlatform(msg.channelType, msg.platformId)));
     if (!mg) {
-      throw new Error(`unknown messaging group for ${msg.channelType}/${msg.platformId} (message ${msg.id})`);
+      throw new DeliveryTargetError(
+        'not_connected',
+        `unknown messaging group for ${msg.channelType}/${msg.platformId} (message ${msg.id})`,
+      );
     }
     if (mg.detached_at) {
       // The bot was removed from this conversation (a channel membership
       // module stamps detached_at when the bot leaves). Fail into the retry
       // path rather than sending into a channel that will reject us; rejoin
       // clears the stamp.
-      throw new Error(
+      throw new DeliveryTargetError(
+        'not_connected',
         `messaging group ${mg.id} is detached (bot removed from ${mg.channel_type}/${mg.platform_id} at ${mg.detached_at})`,
       );
     }
@@ -485,7 +493,8 @@ async function deliverMessage(
         mg.id,
       );
       if (!row) {
-        throw new Error(
+        throw new DeliveryTargetError(
+          'not_authorised',
           `unauthorized channel destination: ${session.agent_group_id} cannot send to ${mg.channel_type}/${mg.platform_id}`,
         );
       }
